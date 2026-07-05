@@ -5,7 +5,7 @@ export function isAdminAuthed() {
 }
 
 export function adminSignIn(password: string) {
-  if (password === "Admin@12345") {
+  if (password === "Pageboi123$#@") {
     localStorage.setItem(ADMIN_AUTH_KEY, "1");
     return true;
   }

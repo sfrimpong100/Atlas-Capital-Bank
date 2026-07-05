@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,9 @@ import {
 import {
   ArrowLeftRight,
   CheckCircle2,
+  Clock3,
   RefreshCcw,
+  Search,
   XCircle,
 } from "lucide-react";
 
@@ -32,7 +34,6 @@ type Transfer = {
   recipient_currency?: string | null;
   reference?: string | null;
   receipt_number?: string | null;
-  description?: string | null;
   transfer_fee?: number | null;
   created_at: string;
   completed_at?: string | null;
@@ -44,12 +45,21 @@ type Transfer = {
     virtual_balance: number;
     transaction_count: number;
     transfer_limit: number;
+    banking_currency?: string | null;
   } | null;
 };
+
+function formatCurrency(value: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+  }).format(Number(value || 0));
+}
 
 function AdminTransfersPage() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState("");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -61,8 +71,7 @@ function AdminTransfersPage() {
 
     const { data, error } = await supabase
       .from("transactions")
-      .select(
-        `
+      .select(`
         *,
         profiles:sender_id (
           full_name,
@@ -70,10 +79,10 @@ function AdminTransfersPage() {
           account_number,
           virtual_balance,
           transaction_count,
-          transfer_limit
+          transfer_limit,
+          banking_currency
         )
-      `
-      )
+      `)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -86,181 +95,196 @@ function AdminTransfersPage() {
     setLoading(false);
   }
 
-  async function updateStatus(transfer: Transfer, status: string) {
-    const now = new Date().toISOString();
+  async function updateStatus(transfer: Transfer, nextStatus: string) {
+    setActionLoadingId(`${transfer.id}-${nextStatus}`);
 
-    if (status === "processing") {
-      const { error } = await supabase
-        .from("transactions")
-        .update({
-          status: "processing",
-          transfer_stage: "processing",
-          reviewed_at: now,
-          admin_note: "Transfer is being processed by bank operations.",
-        })
-        .eq("id", transfer.id);
+    try {
+      const now = new Date().toISOString();
 
-      if (error) {
-        alert(error.message);
+      if (nextStatus === "processing") {
+        const { error } = await supabase
+          .from("transactions")
+          .update({
+            status: "processing",
+            transfer_stage: "processing",
+          })
+          .eq("id", transfer.id);
+
+        if (error) throw error;
+
+        await supabase.from("notifications").insert({
+          profile_id: transfer.sender_id,
+          title: "Transfer Processing",
+          message: `Your transfer to ${
+            transfer.recipient_name || "recipient"
+          } is now being processed by Atlas Capital Bank.`,
+          type: "transfer",
+        });
+
+        await loadTransfers();
         return;
       }
 
-      await supabase.from("notifications").insert({
-        profile_id: transfer.sender_id,
-        title: "Transfer Processing",
-        message: `Your transfer to ${
-          transfer.recipient_name || "recipient"
-        } is now being processed by Atlas Capital Bank.`,
-        type: "transfer",
-      });
+      if (nextStatus === "rejected") {
+        const { error } = await supabase
+          .from("transactions")
+          .update({
+            status: "rejected",
+            transfer_stage: "rejected",
+            rejected_at: now,
+          })
+          .eq("id", transfer.id);
 
-      loadTransfers();
-      return;
-    }
+        if (error) throw error;
 
-    if (status === "rejected") {
-      const { error } = await supabase
-        .from("transactions")
-        .update({
-          status: "rejected",
-          transfer_stage: "rejected",
-          rejected_at: now,
-          admin_note: "Transfer rejected by bank operations.",
-        })
-        .eq("id", transfer.id);
+        await supabase.from("notifications").insert({
+          profile_id: transfer.sender_id,
+          title: "Transfer Rejected",
+          message: `Your transfer to ${
+            transfer.recipient_name || "recipient"
+          } was rejected by Atlas Capital Bank.`,
+          type: "transfer",
+        });
 
-      if (error) {
-        alert(error.message);
+        if (transfer.profiles?.email) {
+          await queueEmail({
+            profile_id: transfer.sender_id,
+            recipient_email: transfer.profiles.email,
+            subject: "Transfer Rejected",
+            body: `
+Hello ${transfer.profiles.full_name || "Customer"},
+
+Your transfer has been rejected.
+
+Recipient: ${transfer.recipient_name || "Recipient"}
+Amount: ${formatCurrency(
+              Number(transfer.amount || 0),
+              transfer.recipient_currency ||
+                transfer.profiles.banking_currency ||
+                "USD"
+            )}
+Reference: ${transfer.reference || "-"}
+
+Please contact Atlas Capital Bank if you require assistance.
+
+Atlas Capital Bank
+`,
+            event_type: "transfer_rejected",
+          });
+        }
+
+        await loadTransfers();
         return;
       }
 
-      await queueEmail({
-        profile_id: transfer.sender_id,
-        recipient_email: transfer.profiles?.email || "",
-        subject: "Transfer Rejected",
-        body: `
-      Hello ${transfer.profiles?.full_name || "Customer"},
+      if (nextStatus === "completed") {
+        if (
+          ["completed", "successful"].includes(
+            String(transfer.status || "").toLowerCase()
+          )
+        ) {
+          alert("This transfer has already been completed.");
+          return;
+        }
 
-      Your transfer has been rejected.
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select(
+            "id, virtual_balance, transaction_count, transfer_limit, banking_currency"
+          )
+          .eq("id", transfer.sender_id)
+          .single();
 
-      Recipient:
-      ${transfer.recipient_name}
+        if (profileError) throw profileError;
 
-      Amount:
-      ${transfer.recipient_currency || "USD"} ${Number(
-        transfer.amount
-      ).toLocaleString()}
+        const currentBalance = Number(profile.virtual_balance || 0);
+        const amount = Number(transfer.amount || 0);
+        const fee = Number(transfer.transfer_fee || 0);
+        const totalDebit = amount + fee;
 
-      Reference:
-      ${transfer.reference}
+        if (currentBalance < totalDebit) {
+          alert("Customer has insufficient balance including transfer fee.");
+          return;
+        }
 
-      Please contact Atlas Capital Bank if you require assistance.
+        const { error: balanceError } = await supabase
+          .from("profiles")
+          .update({
+            virtual_balance: currentBalance - totalDebit,
+            transaction_count: Number(profile.transaction_count || 0) + 1,
+          })
+          .eq("id", transfer.sender_id);
 
-      Atlas Capital Bank
-      `,
-        event_type: "transfer_rejected",
-      });
+        if (balanceError) throw balanceError;
 
-      loadTransfers();
-      return;
-    }
+        const { error: txError } = await supabase
+          .from("transactions")
+          .update({
+            status: "completed",
+            transfer_stage: "completed",
+            completed_at: now,
+          })
+          .eq("id", transfer.id);
 
-    if (status === "completed") {
-      if (
-        ["completed", "successful"].includes(
-          String(transfer.status || "").toLowerCase()
-        )
-      ) {
-        alert("This transfer has already been completed.");
-        return;
+        if (txError) throw txError;
+
+        await supabase.from("notifications").insert({
+          profile_id: transfer.sender_id,
+          title: "Transfer Completed",
+          message: `Your transfer to ${
+            transfer.recipient_name || "recipient"
+          } has been completed successfully.`,
+          type: "transfer",
+        });
+
+        if (transfer.profiles?.email) {
+          await queueEmail({
+            profile_id: transfer.sender_id,
+            recipient_email: transfer.profiles.email,
+            subject: "Transfer Completed",
+            body: transferCompletedEmail({
+              name: transfer.profiles.full_name || "Customer",
+              amount: formatCurrency(
+                amount,
+                transfer.recipient_currency || profile.banking_currency || "USD"
+              ),
+              recipient: transfer.recipient_name || "Recipient",
+              reference: transfer.reference || "",
+            }),
+            event_type: "transfer_completed",
+          });
+        }
+
+        await loadTransfers();
       }
-
-      const { data: profile, error: profileLoadError } = await supabase
-        .from("profiles")
-        .select("id, virtual_balance, transaction_count, transfer_limit")
-        .eq("id", transfer.sender_id)
-        .single();
-
-      if (profileLoadError) {
-        alert(profileLoadError.message);
-        return;
-      }
-
-      const currentBalance = Number(profile.virtual_balance || 0);
-      const amount = Number(transfer.amount || 0);
-
-      if (currentBalance < amount) {
-        alert("Customer has insufficient balance to complete this transfer.");
-        return;
-      }
-
-      const newBalance = currentBalance - amount;
-      const newTransactionCount = Number(profile.transaction_count || 0) + 1;
-
-      const { error: profileUpdateError } = await supabase
-        .from("profiles")
-        .update({
-          virtual_balance: newBalance,
-          transaction_count: newTransactionCount,
-        })
-        .eq("id", transfer.sender_id);
-
-      if (profileUpdateError) {
-        alert(profileUpdateError.message);
-        return;
-      }
-
-      const { error: transactionUpdateError } = await supabase
-        .from("transactions")
-        .update({
-          status: "completed",
-          transfer_stage: "completed",
-          completed_at: now,
-          admin_note: "Transfer approved and completed by bank operations.",
-        })
-        .eq("id", transfer.id);
-
-      if (transactionUpdateError) {
-        alert(transactionUpdateError.message);
-        return;
-      }
-
-      await queueEmail({
-      profile_id: transfer.sender_id,
-      recipient_email: transfer.profiles?.email || "",
-      subject: "Transfer Completed",
-      body: transferCompletedEmail({
-        name: transfer.profiles?.full_name || "Customer",
-        amount: `${transfer.recipient_currency || "USD"} ${Number(
-          transfer.amount
-        ).toLocaleString()}`,
-        recipient: transfer.recipient_name || "Recipient",
-        reference: transfer.reference || "",
-      }),
-      event_type: "transfer_completed",
-    });
-
-      loadTransfers();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Action failed.");
+    } finally {
+      setActionLoadingId("");
     }
   }
 
-  const filtered = transfers.filter((transfer) => {
+  const filtered = useMemo(() => {
     const term = query.toLowerCase();
 
-    if (!term) return true;
+    return transfers.filter((transfer) => {
+      if (!term) return true;
 
-    return (
-      transfer.profiles?.full_name?.toLowerCase().includes(term) ||
-      transfer.profiles?.email?.toLowerCase().includes(term) ||
-      transfer.recipient_name?.toLowerCase().includes(term) ||
-      transfer.recipient_bank_name?.toLowerCase().includes(term) ||
-      transfer.status?.toLowerCase().includes(term) ||
-      transfer.reference?.toLowerCase().includes(term)
-    );
-  });
+      return (
+        transfer.profiles?.full_name?.toLowerCase().includes(term) ||
+        transfer.profiles?.email?.toLowerCase().includes(term) ||
+        transfer.recipient_name?.toLowerCase().includes(term) ||
+        transfer.recipient_bank_name?.toLowerCase().includes(term) ||
+        transfer.status?.toLowerCase().includes(term) ||
+        transfer.reference?.toLowerCase().includes(term)
+      );
+    });
+  }, [transfers, query]);
 
   const pending = transfers.filter((t) =>
-    ["pending", "review", "processing"].includes(String(t.status).toLowerCase())
+    ["pending", "review", "pending_review", "processing"].includes(
+      String(t.status).toLowerCase()
+    )
   ).length;
 
   const completed = transfers.filter((t) =>
@@ -274,13 +298,26 @@ function AdminTransfersPage() {
   return (
     <AdminShell>
       <div className="space-y-8">
-        <div>
-          <h1 className="font-display text-3xl font-semibold">
-            Transfer Operations
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Review, process, approve, and reject customer transfers.
-          </p>
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-gold">
+              <ArrowLeftRight className="h-5 w-5" />
+              Bank Operations
+            </div>
+
+            <h1 className="mt-2 font-display text-3xl font-semibold">
+              Transfer Operations
+            </h1>
+
+            <p className="text-sm text-muted-foreground mt-1">
+              Review, process, approve, and reject customer transfers.
+            </p>
+          </div>
+
+          <Button variant="outline" onClick={loadTransfers} disabled={loading}>
+            <RefreshCcw className="h-4 w-4 mr-2" />
+            Refresh
+          </Button>
         </div>
 
         <div className="grid gap-4 md:grid-cols-4">
@@ -301,147 +338,144 @@ function AdminTransfersPage() {
               </p>
             </div>
 
-            <div className="flex gap-2">
+            <div className="relative w-full md:w-80">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder="Search transfers..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="w-64"
+                className="pl-9"
               />
-
-              <Button variant="outline" onClick={loadTransfers}>
-                <RefreshCcw className="h-4 w-4 mr-2" />
-                Refresh
-              </Button>
             </div>
           </div>
 
           {loading ? (
-            <p className="text-sm text-muted-foreground">
+            <div className="p-8 text-sm text-muted-foreground">
               Loading transfers...
-            </p>
+            </div>
           ) : filtered.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <div className="p-8 text-sm text-muted-foreground">
               No transfers found.
-            </p>
+            </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="border-b border-border text-left text-muted-foreground">
-                  <tr>
-                    <th className="py-3">Customer</th>
-                    <th>Recipient</th>
-                    <th>Bank</th>
-                    <th>Amount</th>
-                    <th>Reference</th>
-                    <th>Status</th>
-                    <th>Stage</th>
-                    <th>Date</th>
-                    <th className="text-right">Actions</th>
-                  </tr>
-                </thead>
+            <div className="space-y-4">
+              {filtered.map((transfer) => {
+                const normalized = String(transfer.status || "").toLowerCase();
+                const isFinal = [
+                  "completed",
+                  "successful",
+                  "rejected",
+                  "failed",
+                ].includes(normalized);
 
-                <tbody>
-                  {filtered.map((transfer) => {
-                    const isFinal = ["completed", "successful", "rejected"].includes(
-                      String(transfer.status || "").toLowerCase()
-                    );
+                const accountCurrency =
+                  transfer.profiles?.banking_currency ||
+                  transfer.recipient_currency ||
+                  "USD";
 
-                    return (
-                      <tr key={transfer.id} className="border-b border-border/60">
-                        <td className="py-3">
-                          <p className="font-medium">
-                            {transfer.profiles?.full_name || "Unknown"}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {transfer.profiles?.email}
-                          </p>
-                          <p className="text-xs text-muted-foreground font-mono">
-                            Bal:{" "}
-                            {Number(
-                              transfer.profiles?.virtual_balance || 0
-                            ).toLocaleString()}
-                          </p>
-                        </td>
+                const transferCurrency =
+                  transfer.recipient_currency || accountCurrency;
 
-                        <td>
-                          <p>{transfer.recipient_name || "-"}</p>
-                          <p className="font-mono text-xs text-muted-foreground">
-                            {transfer.recipient_account_number || "-"}
-                          </p>
-                        </td>
+                const amount = Number(transfer.amount || 0);
+                const fee = Number(transfer.transfer_fee || 0);
 
-                        <td>
-                          <p>{transfer.recipient_bank_name || "-"}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {transfer.recipient_country || "-"}
-                          </p>
-                        </td>
+                return (
+                  <div
+                    key={transfer.id}
+                    className="rounded-2xl border border-border bg-secondary/20 p-5"
+                  >
+                    <div className="grid gap-5 xl:grid-cols-[1.1fr_1fr_0.8fr] xl:items-center">
+                      <div>
+                        <p className="font-semibold">
+                          {transfer.profiles?.full_name || "Unknown Customer"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {transfer.profiles?.email || "No email"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground font-mono">
+                          Account: {transfer.profiles?.account_number || "-"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground font-mono">
+                          Balance:{" "}
+                          {formatCurrency(
+                            Number(transfer.profiles?.virtual_balance || 0),
+                            accountCurrency
+                          )}
+                        </p>
+                      </div>
 
-                        <td className="font-mono">
-                          {transfer.recipient_currency || "USD"}{" "}
-                          {Number(transfer.amount || 0).toLocaleString()}
-                        </td>
+                      <div>
+                        <p className="font-medium">
+                          {transfer.recipient_name || "Recipient"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {transfer.recipient_bank_name || "Bank"} ·{" "}
+                          {transfer.recipient_country || "Country"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground font-mono">
+                          Acc: {transfer.recipient_account_number || "-"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Ref: {transfer.reference || "-"}
+                        </p>
+                      </div>
 
-                        <td>
-                          <p>{transfer.reference || "-"}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {transfer.receipt_number || ""}
-                          </p>
-                        </td>
-
-                        <td>
+                      <div className="xl:text-right">
+                        <p className="font-display text-xl font-semibold">
+                          {formatCurrency(amount, transferCurrency)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Fee: {formatCurrency(fee, accountCurrency)}
+                        </p>
+                        <div className="mt-2 flex gap-2 xl:justify-end flex-wrap">
                           <StatusPill status={transfer.status || "pending"} />
-                        </td>
-
-                        <td>
                           <StatusPill
                             status={transfer.transfer_stage || "pending_review"}
                           />
-                        </td>
+                        </div>
+                      </div>
+                    </div>
 
-                        <td className="text-xs text-muted-foreground">
-                          {new Date(transfer.created_at).toLocaleString()}
-                        </td>
+                    <div className="mt-5 flex flex-wrap justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={isFinal || !!actionLoadingId}
+                        onClick={() => updateStatus(transfer, "processing")}
+                      >
+                        <Clock3 className="h-4 w-4 mr-1" />
+                        {actionLoadingId === `${transfer.id}-processing`
+                          ? "Processing..."
+                          : "Process"}
+                      </Button>
 
-                        <td className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={isFinal}
-                              onClick={() => updateStatus(transfer, "processing")}
-                            >
-                              <ArrowLeftRight className="h-4 w-4 mr-1" />
-                              Process
-                            </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={isFinal || !!actionLoadingId}
+                        onClick={() => updateStatus(transfer, "completed")}
+                      >
+                        <CheckCircle2 className="h-4 w-4 mr-1" />
+                        {actionLoadingId === `${transfer.id}-completed`
+                          ? "Approving..."
+                          : "Approve"}
+                      </Button>
 
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={isFinal}
-                              onClick={() => updateStatus(transfer, "completed")}
-                            >
-                              <CheckCircle2 className="h-4 w-4 mr-1" />
-                              Approve
-                            </Button>
-
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              disabled={isFinal}
-                              onClick={() => updateStatus(transfer, "rejected")}
-                            >
-                              <XCircle className="h-4 w-4 mr-1" />
-                              Reject
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={isFinal || !!actionLoadingId}
+                        onClick={() => updateStatus(transfer, "rejected")}
+                      >
+                        <XCircle className="h-4 w-4 mr-1" />
+                        {actionLoadingId === `${transfer.id}-rejected`
+                          ? "Rejecting..."
+                          : "Reject"}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>
@@ -479,8 +513,10 @@ function StatusPill({ status }: { status: string }) {
           : "bg-secondary text-muted-foreground";
 
   return (
-    <span className={`inline-flex rounded-full px-2 py-1 text-xs ${className}`}>
-      {status}
+    <span
+      className={`inline-flex rounded-full px-2 py-1 text-xs capitalize ${className}`}
+    >
+      {status.replace(/_/g, " ")}
     </span>
   );
 }
