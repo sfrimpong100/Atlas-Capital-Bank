@@ -31,6 +31,7 @@ import { Route as AdminCustomersRouteImport } from './routes/admin/customers'
 import { Route as AdminCardsRouteImport } from './routes/admin/cards'
 import { Route as AdminBeneficiariesRouteImport } from './routes/admin/beneficiaries'
 import { Route as AdminAnalyticsRouteImport } from './routes/admin/analytics'
+import { Route as AdminActivityRouteImport } from './routes/admin/activity'
 
 const VerificationRoute = VerificationRouteImport.update({
   id: '/verification',
@@ -142,6 +143,11 @@ const AdminAnalyticsRoute = AdminAnalyticsRouteImport.update({
   path: '/analytics',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminActivityRoute = AdminActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => AdminRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -155,6 +161,7 @@ export interface FileRoutesByFullPath {
   '/transactions': typeof TransactionsRoute
   '/transfer': typeof TransferRoute
   '/verification': typeof VerificationRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/beneficiaries': typeof AdminBeneficiariesRoute
   '/admin/cards': typeof AdminCardsRoute
@@ -178,6 +185,7 @@ export interface FileRoutesByTo {
   '/transactions': typeof TransactionsRoute
   '/transfer': typeof TransferRoute
   '/verification': typeof VerificationRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/beneficiaries': typeof AdminBeneficiariesRoute
   '/admin/cards': typeof AdminCardsRoute
@@ -203,6 +211,7 @@ export interface FileRoutesById {
   '/transactions': typeof TransactionsRoute
   '/transfer': typeof TransferRoute
   '/verification': typeof VerificationRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/analytics': typeof AdminAnalyticsRoute
   '/admin/beneficiaries': typeof AdminBeneficiariesRoute
   '/admin/cards': typeof AdminCardsRoute
@@ -229,6 +238,7 @@ export interface FileRouteTypes {
     | '/transactions'
     | '/transfer'
     | '/verification'
+    | '/admin/activity'
     | '/admin/analytics'
     | '/admin/beneficiaries'
     | '/admin/cards'
@@ -252,6 +262,7 @@ export interface FileRouteTypes {
     | '/transactions'
     | '/transfer'
     | '/verification'
+    | '/admin/activity'
     | '/admin/analytics'
     | '/admin/beneficiaries'
     | '/admin/cards'
@@ -276,6 +287,7 @@ export interface FileRouteTypes {
     | '/transactions'
     | '/transfer'
     | '/verification'
+    | '/admin/activity'
     | '/admin/analytics'
     | '/admin/beneficiaries'
     | '/admin/cards'
@@ -461,10 +473,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAnalyticsRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/activity': {
+      id: '/admin/activity'
+      path: '/activity'
+      fullPath: '/admin/activity'
+      preLoaderRoute: typeof AdminActivityRouteImport
+      parentRoute: typeof AdminRoute
+    }
   }
 }
 
 interface AdminRouteChildren {
+  AdminActivityRoute: typeof AdminActivityRoute
   AdminAnalyticsRoute: typeof AdminAnalyticsRoute
   AdminBeneficiariesRoute: typeof AdminBeneficiariesRoute
   AdminCardsRoute: typeof AdminCardsRoute
@@ -477,6 +497,7 @@ interface AdminRouteChildren {
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+  AdminActivityRoute: AdminActivityRoute,
   AdminAnalyticsRoute: AdminAnalyticsRoute,
   AdminBeneficiariesRoute: AdminBeneficiariesRoute,
   AdminCardsRoute: AdminCardsRoute,

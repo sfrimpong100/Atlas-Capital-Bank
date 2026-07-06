@@ -445,7 +445,7 @@ function Dashboard() {
             </h2>
             <div className="mt-5 rounded-2xl border border-border bg-secondary/30 p-4">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                Transfer Usage
+                Transfers
               </p>
               <div className="mt-2 font-display text-3xl font-semibold">
                 {profile.transaction_count || 0} / {profile.transfer_limit || 2}
