@@ -300,7 +300,7 @@ function Transfer() {
             value={formatCurrency(Number(profile.virtual_balance), currency)}
           />
           <MiniCard
-            label="Transfer usage"
+            label="Transfers"
             value={`${profile.transaction_count || 0} / ${
               profile.transfer_limit || 2
             }`}

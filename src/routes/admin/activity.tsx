@@ -6,11 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Activity,
-  ArrowDownLeft,
-  ArrowUpRight,
   Plus,
   RefreshCcw,
   Search,
+  Trash2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin/activity")({
@@ -42,11 +41,13 @@ type Transaction = {
   recipient_bank_name?: string | null;
   recipient_currency?: string | null;
   balance_after?: number | null;
+  created_by_admin?: boolean | null;
   created_at: string;
   profiles?: {
     full_name: string;
     email: string;
     account_number: string;
+    virtual_balance?: number | null;
     banking_currency?: string | null;
   } | null;
 };
@@ -62,6 +63,7 @@ function AdminActivityPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState("");
   const [query, setQuery] = useState("");
 
   const [form, setForm] = useState({
@@ -101,12 +103,13 @@ function AdminActivityPage() {
             full_name,
             email,
             account_number,
+            virtual_balance,
             banking_currency
           )
         `
         )
         .order("created_at", { ascending: false })
-        .limit(50),
+        .limit(100),
     ]);
 
     if (profilesRes.error) alert(profilesRes.error.message);
@@ -231,6 +234,72 @@ function AdminActivityPage() {
     await loadData();
   }
 
+  async function deleteTransaction(tx: Transaction) {
+    const shouldReverse =
+      tx.created_by_admin &&
+      tx.status === "completed" &&
+      tx.balance_after !== null &&
+      tx.balance_after !== undefined;
+
+    const message = shouldReverse
+      ? "Delete this history and reverse its balance effect?"
+      : "Delete this transaction history?";
+
+    if (!confirm(message)) return;
+
+    setDeletingId(tx.id);
+
+    try {
+      if (shouldReverse) {
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("id, virtual_balance")
+          .eq("id", tx.sender_id)
+          .single();
+
+        if (profileError) throw profileError;
+
+        const currentBalance = Number(profile.virtual_balance || 0);
+        const amount = Number(tx.amount || 0);
+        const direction = tx.ledger_direction || "debit";
+
+        const reversedBalance =
+          direction === "credit"
+            ? currentBalance - amount
+            : currentBalance + amount;
+
+        const { error: balanceError } = await supabase
+          .from("profiles")
+          .update({
+            virtual_balance: reversedBalance,
+          })
+          .eq("id", tx.sender_id);
+
+        if (balanceError) throw balanceError;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("id", tx.id);
+
+      if (deleteError) throw deleteError;
+
+      await supabase.from("notifications").insert({
+        profile_id: tx.sender_id,
+        title: "Account Activity Removed",
+        message: `A transaction history item was removed from your account activity.`,
+        type: "account",
+      });
+
+      await loadData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Delete failed.");
+    } finally {
+      setDeletingId("");
+    }
+  }
+
   const filtered = useMemo(() => {
     const term = query.toLowerCase();
 
@@ -263,7 +332,7 @@ function AdminActivityPage() {
             </h1>
 
             <p className="text-sm text-muted-foreground mt-1">
-              Add manual transaction history to customer activity pages.
+              Add and remove manual transaction history from customer activity pages.
             </p>
           </div>
 
@@ -316,56 +385,46 @@ function AdminActivityPage() {
               </div>
             )}
 
-            <div>
-              <label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Transaction Type
-              </label>
-              <select
-                value={form.transaction_type}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    transaction_type: e.target.value,
-                    ledger_direction: defaultDirection(e.target.value),
-                  })
-                }
-                className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="cash_deposit">Cash Deposit</option>
-                <option value="cash_withdrawal">Cash Withdrawal</option>
-                <option value="incoming_transfer">Incoming Transfer</option>
-                <option value="international_transfer">
-                  International Transfer
-                </option>
-                <option value="salary_payment">Salary Payment</option>
-                <option value="interest_payment">Interest Payment</option>
-                <option value="investment_deposit">Investment Deposit</option>
-                <option value="investment_return">Investment Return</option>
-                <option value="card_purchase">Card Purchase</option>
-                <option value="atm_withdrawal">ATM Withdrawal</option>
-                <option value="bank_charge">Bank Charge</option>
-                <option value="transfer_fee">Transfer Fee</option>
-                <option value="refund">Refund</option>
-                <option value="loan_disbursement">Loan Disbursement</option>
-                <option value="loan_repayment">Loan Repayment</option>
-              </select>
-            </div>
+            <SelectField
+              label="Transaction Type"
+              value={form.transaction_type}
+              onChange={(value) =>
+                setForm({
+                  ...form,
+                  transaction_type: value,
+                  ledger_direction: defaultDirection(value),
+                })
+              }
+              options={[
+                ["cash_deposit", "Cash Deposit"],
+                ["cash_withdrawal", "Cash Withdrawal"],
+                ["incoming_transfer", "Incoming Transfer"],
+                ["international_transfer", "International Transfer"],
+                ["salary_payment", "Salary Payment"],
+                ["interest_payment", "Interest Payment"],
+                ["investment_deposit", "Investment Deposit"],
+                ["investment_return", "Investment Return"],
+                ["card_purchase", "Card Purchase"],
+                ["atm_withdrawal", "ATM Withdrawal"],
+                ["bank_charge", "Bank Charge"],
+                ["transfer_fee", "Transfer Fee"],
+                ["refund", "Refund"],
+                ["loan_disbursement", "Loan Disbursement"],
+                ["loan_repayment", "Loan Repayment"],
+              ]}
+            />
 
-            <div>
-              <label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Direction
-              </label>
-              <select
-                value={form.ledger_direction}
-                onChange={(e) =>
-                  setForm({ ...form, ledger_direction: e.target.value })
-                }
-                className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="credit">Credit</option>
-                <option value="debit">Debit</option>
-              </select>
-            </div>
+            <SelectField
+              label="Direction"
+              value={form.ledger_direction}
+              onChange={(value) =>
+                setForm({ ...form, ledger_direction: value })
+              }
+              options={[
+                ["credit", "Credit"],
+                ["debit", "Debit"],
+              ]}
+            />
 
             <div>
               <label className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -382,21 +441,17 @@ function AdminActivityPage() {
               />
             </div>
 
-            <div>
-              <label className="text-xs uppercase tracking-wider text-muted-foreground">
-                Status
-              </label>
-              <select
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value })}
-                className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
-              >
-                <option value="completed">Completed</option>
-                <option value="pending">Pending</option>
-                <option value="processing">Processing</option>
-                <option value="failed">Failed</option>
-              </select>
-            </div>
+            <SelectField
+              label="Status"
+              value={form.status}
+              onChange={(value) => setForm({ ...form, status: value })}
+              options={[
+                ["completed", "Completed"],
+                ["pending", "Pending"],
+                ["processing", "Processing"],
+                ["failed", "Failed"],
+              ]}
+            />
 
             <div>
               <label className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -508,7 +563,7 @@ function AdminActivityPage() {
               return (
                 <div
                   key={tx.id}
-                  className="rounded-xl border border-border bg-secondary/20 p-4 grid gap-4 md:grid-cols-[1fr_1fr_auto] md:items-center"
+                  className="rounded-xl border border-border bg-secondary/20 p-4 grid gap-4 md:grid-cols-[1fr_1.2fr_auto_auto] md:items-center"
                 >
                   <div>
                     <p className="font-semibold">
@@ -531,6 +586,11 @@ function AdminActivityPage() {
                       Ref: {tx.reference || "-"} ·{" "}
                       {new Date(tx.created_at).toLocaleString()}
                     </p>
+                    {tx.created_by_admin && (
+                      <p className="mt-1 text-[11px] text-gold">
+                        Admin-created ledger item
+                      </p>
+                    )}
                   </div>
 
                   <div className="text-right">
@@ -544,6 +604,18 @@ function AdminActivityPage() {
                     </p>
 
                     <StatusPill status={tx.status || "completed"} />
+                  </div>
+
+                  <div className="flex md:justify-end">
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={deletingId === tx.id}
+                      onClick={() => deleteTransaction(tx)}
+                    >
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      {deletingId === tx.id ? "Deleting..." : "Delete"}
+                    </Button>
                   </div>
                 </div>
               );
@@ -566,6 +638,37 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: [string, string][];
+}) {
+  return (
+    <div>
+      <label className="text-xs uppercase tracking-wider text-muted-foreground">
+        {label}
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+      >
+        {options.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: string }) {
   const normalized = String(status || "").toLowerCase();
 
@@ -579,7 +682,9 @@ function StatusPill({ status }: { status: string }) {
           : "bg-secondary text-muted-foreground";
 
   return (
-    <span className={`inline-flex rounded-full px-2 py-1 text-xs capitalize ${className}`}>
+    <span
+      className={`inline-flex rounded-full px-2 py-1 text-xs capitalize ${className}`}
+    >
       {status}
     </span>
   );

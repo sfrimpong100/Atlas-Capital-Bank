@@ -439,9 +439,9 @@ function Dashboard() {
             </div>
           </div>
 
-          <div className="card-surface p-5">
+          <div className="card-git push origin mainsurface p-5">
             <h2 className="font-display text-xl font-semibold">
-              Transfer Access
+              Transfer
             </h2>
             <div className="mt-5 rounded-2xl border border-border bg-secondary/30 p-4">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">
