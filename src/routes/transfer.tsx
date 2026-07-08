@@ -11,6 +11,7 @@ import {
   ArrowDown,
   ArrowLeftRight,
   Building2,
+  FileText,
   Globe2,
   Lock,
   User,
@@ -66,6 +67,16 @@ function Transfer() {
   const [amount, setAmount] = useState("");
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
+
+  const [details, setDetails] = useState({
+    purpose: "Family Support",
+    recipientAddress: "",
+    bankAddress: "",
+    swiftCode: "",
+    iban: "",
+    invoiceNumber: "",
+    paymentCategory: "Personal Transfer",
+  });
 
   useEffect(() => {
     async function loadProfile() {
@@ -149,15 +160,6 @@ function Transfer() {
     Number(profile?.transaction_count || 0) >=
     Number(profile?.transfer_limit || 2);
 
-  const valid =
-    !!profile &&
-    profile.status === "active" &&
-    !isExpired &&
-    !hasReachedLimit &&
-    !!selectedBeneficiary &&
-    amt > 0 &&
-    totalDebit <= Number(profile.virtual_balance || 0);
-
   async function submit(e: React.FormEvent) {
     e.preventDefault();
 
@@ -197,19 +199,36 @@ function Transfer() {
 
     try {
       const receiptNumber = `ACB-${Date.now()}`;
-      const transferReference = reference || receiptNumber;
+      const transferReference =
+        reference || details.invoiceNumber || receiptNumber;
+
+      const fullDescription = [
+        note || "International bank transfer",
+        details.purpose ? `Purpose: ${details.purpose}` : "",
+        details.paymentCategory ? `Category: ${details.paymentCategory}` : "",
+        details.invoiceNumber ? `Invoice: ${details.invoiceNumber}` : "",
+        details.swiftCode ? `SWIFT/BIC: ${details.swiftCode}` : "",
+        details.iban ? `IBAN: ${details.iban}` : "",
+        details.recipientAddress
+          ? `Recipient Address: ${details.recipientAddress}`
+          : "",
+        details.bankAddress ? `Bank Address: ${details.bankAddress}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
 
       const { data: transactionData, error: transactionError } = await supabase
         .from("transactions")
         .insert({
           sender_id: profile.id,
-          recipient_account_number: selectedBeneficiary.account_number,
+          recipient_account_number:
+            details.iban || selectedBeneficiary.account_number,
           recipient_name: selectedBeneficiary.beneficiary_name,
           recipient_bank_name: selectedBeneficiary.bank_name,
           recipient_country: selectedBeneficiary.country,
           recipient_currency: selectedBeneficiary.currency,
           amount: amt,
-          description: note || "International bank transfer",
+          description: fullDescription,
           reference: transferReference,
           transaction_type: "external_bank",
           transfer_type: "external_bank",
@@ -219,6 +238,9 @@ function Transfer() {
           exchange_rate: exchangeRate,
           destination_amount: destinationAmount,
           receipt_number: receiptNumber,
+          ledger_direction: "debit",
+          ledger_category: "transfer",
+          balance_after: Number(profile.virtual_balance || 0),
         })
         .select()
         .single();
@@ -284,7 +306,7 @@ function Transfer() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-3xl px-4 sm:px-6 py-8 animate-fade-in">
+      <div className="mx-auto max-w-4xl px-4 sm:px-6 py-8 animate-fade-in">
         <h1 className="font-display text-3xl font-semibold tracking-tight">
           International Bank Transfer
         </h1>
@@ -293,17 +315,11 @@ function Transfer() {
           Submit a secure transfer request to an approved beneficiary.
         </p>
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
           <MiniCard label="From account" value={profile.account_number} />
           <MiniCard
             label="Available balance"
             value={formatCurrency(Number(profile.virtual_balance), currency)}
-          />
-          <MiniCard
-            label="Transfers"
-            value={`${profile.transaction_count || 0} / ${
-              profile.transfer_limit || 2
-            }`}
           />
         </div>
 
@@ -323,7 +339,7 @@ function Transfer() {
 
         <form
           onSubmit={submit}
-          className="mt-8 card-surface p-5 sm:p-7 space-y-6"
+          className="mt-8 card-surface p-5 sm:p-7 space-y-7"
         >
           <section>
             <h2 className="font-display text-lg font-semibold mb-4">
@@ -376,6 +392,118 @@ function Transfer() {
               <ArrowDown className="h-4 w-4 text-primary" />
             </div>
           </div>
+
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <FileText className="h-5 w-5 text-gold" />
+              <h2 className="font-display text-lg font-semibold">
+                Recipient / Transaction Details
+              </h2>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <Label>Payment Purpose</Label>
+                <select
+                  value={details.purpose}
+                  onChange={(e) =>
+                    setDetails({ ...details, purpose: e.target.value })
+                  }
+                  className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option>Family Support</option>
+                  <option>Business Payment</option>
+                  <option>Investment Transfer</option>
+                  <option>Property Payment</option>
+                  <option>Invoice Settlement</option>
+                  <option>Education Support</option>
+                  <option>Personal Transfer</option>
+                  <option>Other</option>
+                </select>
+              </div>
+
+              <div>
+                <Label>Payment Category</Label>
+                <Input
+                  value={details.paymentCategory}
+                  onChange={(e) =>
+                    setDetails({
+                      ...details,
+                      paymentCategory: e.target.value,
+                    })
+                  }
+                  placeholder="Personal Transfer, Business, Investment..."
+                  className="mt-2"
+                />
+              </div>
+
+              <div>
+                <Label>Recipient Address</Label>
+                <Input
+                  value={details.recipientAddress}
+                  onChange={(e) =>
+                    setDetails({
+                      ...details,
+                      recipientAddress: e.target.value,
+                    })
+                  }
+                  placeholder="Recipient address"
+                  className="mt-2"
+                />
+              </div>
+
+              <div>
+                <Label>Bank Address</Label>
+                <Input
+                  value={details.bankAddress}
+                  onChange={(e) =>
+                    setDetails({ ...details, bankAddress: e.target.value })
+                  }
+                  placeholder="Receiving bank address"
+                  className="mt-2"
+                />
+              </div>
+
+              <div>
+                <Label>SWIFT / BIC</Label>
+                <Input
+                  value={details.swiftCode}
+                  onChange={(e) =>
+                    setDetails({ ...details, swiftCode: e.target.value })
+                  }
+                  placeholder="DEUTDEFFXXX"
+                  className="mt-2"
+                />
+              </div>
+
+              <div>
+                <Label>IBAN / Account Override</Label>
+                <Input
+                  value={details.iban}
+                  onChange={(e) =>
+                    setDetails({ ...details, iban: e.target.value })
+                  }
+                  placeholder="Optional IBAN or destination account"
+                  className="mt-2"
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <Label>Invoice / Payment ID</Label>
+                <Input
+                  value={details.invoiceNumber}
+                  onChange={(e) =>
+                    setDetails({
+                      ...details,
+                      invoiceNumber: e.target.value,
+                    })
+                  }
+                  placeholder="INV-2026-001 or optional payment ID"
+                  className="mt-2"
+                />
+              </div>
+            </div>
+          </section>
 
           <section>
             <h2 className="font-display text-lg font-semibold mb-4">
@@ -460,26 +588,9 @@ function Transfer() {
             </span>
           </div>
 
-          <div className="rounded-xl border border-border bg-secondary/40 p-3 text-xs text-muted-foreground">
-            <p>Transfer check:</p>
-            <p>Status active: {profile.status === "active" ? "yes" : "no"}</p>
-            <p>Expired: {isExpired ? "yes" : "no"}</p>
-            <p>Reached limit: {hasReachedLimit ? "yes" : "no"}</p>
-            <p>
-              Beneficiary selected: {selectedBeneficiary ? "yes" : "no"}
-            </p>
-            <p>Amount valid: {amt > 0 ? "yes" : "no"}</p>
-            <p>
-              Enough balance including fee:{" "}
-              {totalDebit <= Number(profile.virtual_balance || 0)
-                ? "yes"
-                : "no"}
-            </p>
-          </div>
-
           <Button
             type="submit"
-            disabled={false}
+            disabled={submitting}
             className="w-full h-12 rounded-lg font-semibold text-base bg-primary hover:bg-primary/90"
           >
             {submitting ? (
